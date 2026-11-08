@@ -4,7 +4,7 @@ Faceless host in a red hoodie, face hidden by the lime pixel mask.
 Shots follow the brief: masked desk shot -> hands open a laptop ->
 blank chat screen with a blinking cursor -> back to the masked shot.
 
-Usage:  python3 render.py [out.mp4]
+Usage:  python3 render.py [--out out.mp4] [--voice line01.wav line02.wav ...]
 Needs:  Pillow, numpy, ffmpeg on PATH, Inter + Noto Color Emoji fonts.
 """
 
@@ -22,7 +22,10 @@ W, H = 1080, 1920
 FPS = 30
 DURATION = 28.0
 HERE = Path(__file__).resolve().parent
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "post-1-intro.mp4"
+OUT = HERE / "post-1-intro.mp4"
+# shot cuts and beats; retime() moves them to fit a recorded voiceover
+T_HANDS, T_SCREEN, T_TIMER, T_STUCK, T_BACK, T_END = 3.0, 8.6, 10.6, 12.4, 15.7, 24.6
+VOICE = None
 
 LIME = (209, 254, 23)
 LIME_D = (150, 196, 0)
@@ -392,7 +395,7 @@ def draw_hand(img, x, y, side):
 def screen_shot(t, local):
     """8.6s -> 15.6s: the blank page, cursor blinking; a timer starts on 'time how long'."""
     img = Image.new("RGBA", (W, H), (8, 8, 10, 255))
-    s = 1.0 + 0.08 * ease(local / 7)
+    s = 1.0 + 0.08 * ease(local / (T_BACK - T_SCREEN))
     sw_, sh_ = int(1000 * 1.25), int(1560 * 1.0)
     screen = chat_screen(sw_, sh_, t, cursor_on=(t * 1.9) % 2 < 1.15).resize((int(sw_ * s), int(sh_ * s)), Image.BILINEAR)
     img.paste(screen, ((W - screen.width) // 2 - int(118 * s), (H - screen.height) // 2 - 40))
@@ -408,7 +411,7 @@ def screen_shot(t, local):
     img.alpha_composite(edge)
 
     # stopwatch chip from 10.6s ("time how long it really takes me")
-    tt = t - 10.6
+    tt = t - T_TIMER
     if tt > 0:
         a = ease_out(tt / 0.4)
         chip = Image.new("RGBA", (300, 96), (0, 0, 0, 0))
@@ -420,7 +423,7 @@ def screen_shot(t, local):
         chip.putalpha(chip.split()[3].point(lambda v: int(v * a)))
         img.alpha_composite(chip, (W - 300 - 70, int(330 - 30 * (1 - a))))
     # "stuck" ping on 12.4s
-    st = t - 12.4
+    st = t - T_STUCK
     if 0 < st < 1.8:
         a = ease_out(st / 0.3) * (1 - ease((st - 1.4) / 0.4))
         tag = Image.new("RGBA", (330, 96), (0, 0, 0, 0))
@@ -549,7 +552,7 @@ def draw_caption(img, t):
                 col = (225, 225, 225)
             d.text((x, y), words[i], font=f, fill=col, stroke_width=9, stroke_fill=INK)
             x += ww + space
-    if start == 22.0:
+    if text.startswith("Tell me"):
         bob = math.sin(t * 7) * 10
         img.alpha_composite(emoji("👇", 96), (W // 2 - 48, int(base_y + len(rows) * 82 + 30 + bob)))
 
@@ -582,7 +585,7 @@ def rooster(scale):
 
 
 def draw_endcard(img, t):
-    lt = t - 24.6
+    lt = t - T_END
     if lt < 0:
         return
     a = ease(lt / 0.5)
@@ -650,17 +653,51 @@ def write_music(path):
 
 # ---------------------------------------------------------------- timeline
 
+def speaking(t):
+    if VOICE is None:
+        return 0.3 < t < T_END
+    return any(s0 <= t <= s0 + d for s0, d in VOICE["spans"])
+
+
+def load_voice(paths, gap=0.16, lead=0.3):
+    """Trim each line's silence, lay them end to end, and retime captions and cuts to the voice."""
+    global VOICE, CAPTIONS, DURATION, T_HANDS, T_SCREEN, T_TIMER, T_STUCK, T_BACK, T_END
+    import soundfile as sf
+    clips, sr = [], None
+    for p in paths:
+        a, sr = sf.read(p)
+        loud = np.where(np.abs(a) > 0.01)[0]
+        clips.append(a[max(0, loud[0] - int(0.03 * sr)): loud[-1] + int(0.06 * sr)])
+    starts, t = [], lead
+    for i, c in enumerate(clips):
+        starts.append(t)
+        t += len(c) / sr + (gap * 2.2 if i in (6, 8) else gap)  # breathe before "No courses" and the CTA
+    durs = [len(c) / sr for c in clips]
+    T_HANDS = max(3.0, starts[0] + durs[0] + 0.1)
+    T_SCREEN, T_TIMER, T_STUCK, T_BACK = starts[3], starts[4], starts[5], starts[7]
+    T_END = starts[10] + durs[10] + 0.5
+    DURATION = round(T_END + 3.4, 2)
+    texts = [c[2] for c in CAPTIONS]
+    CAPTIONS = [(max(starts[i], 2.7) if i == 0 else starts[i],
+                 starts[i + 1] if i + 1 < len(starts) else T_END, texts[i]) for i in range(len(texts))]
+    track = np.zeros(int(DURATION * sr))
+    for s0, c in zip(starts, clips):
+        i0 = int(s0 * sr)
+        track[i0:i0 + len(c)] += c
+    VOICE = {"spans": list(zip(starts, durs)), "track": track, "sr": sr}
+
+
 def frame(t):
-    if t < 3.0:
-        img = masked_shot(t, t, talking=t > 0.3, push=ease(t / 3.0)).convert("RGBA")
-    elif t < 8.6:
-        img = hands_shot(t, t - 3.0)
-    elif t < 15.7:
-        img = screen_shot(t, t - 8.6)
+    if t < T_HANDS:
+        img = masked_shot(t, t, talking=speaking(t), push=ease(t / T_HANDS)).convert("RGBA")
+    elif t < T_SCREEN:
+        img = hands_shot(t, t - T_HANDS)
+    elif t < T_BACK:
+        img = screen_shot(t, t - T_SCREEN)
     else:
-        img = masked_shot(t, t - 15.7, talking=t < 24.6, push=0.4 + 0.6 * ease((t - 15.7) / 9)).convert("RGBA")
+        img = masked_shot(t, t - T_BACK, talking=speaking(t), push=0.4 + 0.6 * ease((t - T_BACK) / (T_END - T_BACK))).convert("RGBA")
     # whip-flash on cuts
-    for cut in (3.0, 8.6, 15.7):
+    for cut in (T_HANDS, T_SCREEN, T_BACK):
         dt = t - cut
         if 0 <= dt < 0.12:
             img.alpha_composite(Image.new("RGBA", (W, H), (255, 255, 255, int(150 * (1 - dt / 0.12)))))
@@ -671,22 +708,31 @@ def frame(t):
 
 
 def main():
-    wav = HERE / "music-bed.wav"
+    wav = OUT.with_suffix(".music.wav")
     write_music(wav)
     frames = int(DURATION * FPS)
+    audio_in = ["-i", str(wav)]
+    mix = ["-map", "0:v", "-map", "1:a"]
+    if VOICE is not None:
+        import soundfile as sf
+        vwav = OUT.with_suffix(".voice.wav")
+        sf.write(vwav, VOICE["track"], VOICE["sr"])
+        audio_in += ["-i", str(vwav)]
+        # music ducks under the voice, then the mix is normalised for Instagram loudness
+        mix = ["-filter_complex",
+               "[2:a]aresample=44100,asplit=2[vo][sc];[1:a]volume=0.8[mu];"
+               "[mu][sc]sidechaincompress=threshold=0.02:ratio=8:attack=15:release=350[md];"
+               "[vo][md]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[a]",
+               "-map", "0:v", "-map", "[a]", "-ar", "44100"]
     ff = subprocess.Popen(
         ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-         "-r", str(FPS), "-i", "-", "-i", str(wav), "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(OUT)],
+         "-r", str(FPS), "-i", "-", *audio_in, *mix, "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-t", str(DURATION), "-movflags", "+faststart", str(OUT)],
         stdin=subprocess.PIPE,
     )
-    only = set(int(a) for a in sys.argv[2:]) if len(sys.argv) > 2 else None
     for i in range(frames):
         t = i / FPS
-        im = frame(t)
-        if only is not None and i in only:
-            im.save(HERE / f"frame-{i}.png")
-        ff.stdin.write(im.tobytes())
+        ff.stdin.write(frame(t).tobytes())
         if i % 150 == 0:
             print(f"{t:5.1f}s", flush=True)
     ff.stdin.close()
@@ -695,10 +741,19 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--stills":
-        out = Path(sys.argv[2])
-        out.mkdir(parents=True, exist_ok=True)
-        for s in sys.argv[3:]:
-            frame(float(s)).save(out / f"t{s}.png")
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", type=Path, default=OUT)
+    ap.add_argument("--voice", nargs="*", help="one WAV per caption line, in order; retimes the reel to the voice")
+    ap.add_argument("--stills", type=Path, help="write PNG stills to this folder instead of a video")
+    ap.add_argument("--at", nargs="*", type=float, default=[])
+    args = ap.parse_args()
+    OUT = args.out
+    if args.voice:
+        load_voice(args.voice)
+    if args.stills:
+        args.stills.mkdir(parents=True, exist_ok=True)
+        for s in args.at:
+            frame(s).save(args.stills / f"t{s}.png")
     else:
         main()

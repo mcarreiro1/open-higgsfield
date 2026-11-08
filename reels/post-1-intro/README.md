@@ -1,10 +1,25 @@
 # Post 1: Intro Reel (pin this)
 
-`post-1-intro.mp4`: 1080×1920, 30 fps, 28 s, with a quiet lo-fi music bed. The host wears a red hoodie with the lime pixel mask. Captions are burned in, so record your voiceover over the top using the timings below.
+| File | Audio | Length |
+| --- | --- | --- |
+| `post-1-intro-voice-a.mp4` | AI voice A (Kokoro `af_heart`) + music | 26.1 s |
+| `post-1-intro-voice-b.mp4` | AI voice B (Kokoro `am_michael`) + music | 27.7 s |
+| `post-1-intro.mp4` | Music only; record your own voice over it | 28.0 s |
 
-Re-render with `python3 render.py` (needs Pillow, numpy, ffmpeg).
+All three are 1080×1920 at 30 fps. The host wears a red hoodie with the lime pixel mask. Captions are burned in; in the voiced cuts the captions and shot cuts are retimed to follow the voice.
 
-## Timeline
+**Music:** composed in code (`write_music` in `render.py`), so it is original and copyright-free. In the voiced cuts it ducks under the voice, and the mix is normalised to about -14 LUFS.
+**Voices:** made with [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), an open-source voice model (Apache 2.0), run offline. Turn on Instagram's "AI info" label when posting the voiced cuts.
+
+Re-render (needs Pillow, numpy, ffmpeg, plus `kokoro-onnx` and `soundfile` for voices):
+
+```bash
+python3 render.py                                     # music only
+python3 tts.py af_heart                               # writes vo/af_heart_00.wav ... (needs the Kokoro model files in ./kokoro)
+python3 render.py --out voice-a.mp4 --voice vo/af_heart_*.wav
+```
+
+## Timeline (music-only cut)
 
 | Time | Shot | On screen |
 | --- | --- | --- |
